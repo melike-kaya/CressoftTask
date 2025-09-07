@@ -57,39 +57,38 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       # --- Policy gate: Cosign verify
+      # --- Policy gate: Cosign verify (referrers-friendly)
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Login to ECR (explicit)
+      - name: Login to ECR (for verify)
         run: |
           aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
           | docker login --username AWS --password-stdin "${{ env.ECR_REGISTRY }}"
-      
-      - name: Debug triangulate signature ref and check in ECR
+
+      # Eski "triangulate + describe-images" adımını SİLİN
+
+      - name: Verify signature (keyless, with small retry)
         env:
           COSIGN_EXPERIMENTAL: "true"
+        shell: bash
         run: |
-          # What signature tag should exist for this digest?
-          SIGREF=$(cosign triangulate "${ECR_REGISTRY}/${ECR_REPO}@${{ inputs.image_digest }}")
-          echo "Cosign expects signature tag: $SIGREF"
-      
-          # Does that .sig tag exist in ECR?
-          SIGTAG="${SIGREF##*:}"  # extract tag part after the colon
-          aws ecr describe-images \
-            --region "${AWS_REGION}" \
-            --repository-name "${ECR_REPO}" \
-            --image-ids imageTag="$SIGTAG" \
-            --query 'imageDetails[0].imageDigest' --output text
+          set -euo pipefail
+          IMG="${ECR_REGISTRY}/${ECR_REPO}@${{ inputs.image_digest }}"
+          echo "Verifying: ${IMG}"
+          for i in {1..5}; do
+            if cosign verify \
+              --certificate-identity "https://github.com/${{ github.workflow_ref }}" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "${IMG}"; then
+              echo "Signature verified ✅"
+              exit 0
+            fi
+            echo "Verify attempt $i failed; retrying in 6s..."
+            sleep 6
+          done
+          echo "ERROR: cosign verify failed after retries."; exit 1
 
-
-      - name: Verify signature
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-        run: |
-          cosign verify \
-            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/build.yml@refs/heads/main" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${ECR_REGISTRY}/${ECR_REPO}@${{ inputs.image_digest }}"
 
       # --- 1) Lambda kodu: aynı digest ile güncelle + version publish
       - name: Update function code to digest & publish version
