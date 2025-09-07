@@ -117,3 +117,37 @@ ECR_REPO = repository name (e.g. podinfo)
 S3_DEPLOY_BUCKET = value of deploy_bucket
 
 ** See the screenshots in the main directory of this repo for an example of how the GitHub secrets and variables are configured.
+
+
+
+### Build Workflow (`.github/workflows/build.yml`)
+
+The build pipeline performs **supply-chain hardened image builds**:
+
+1. **Checkout source code** from GitHub
+2. **Set up Buildx/QEMU** for reproducible builds
+3. **Install Syft & Cosign**  
+   - Syft → generates SBOM (CycloneDX JSON)  
+   - Cosign → signs container images keylessly (OIDC)
+4. **Configure AWS credentials via OIDC** (`aws-actions/configure-aws-credentials`)  
+   - Short-lived STS creds from IAM OIDC role
+5. **Login to Amazon ECR**
+6. **Build the Podinfo container image** from source (`Dockerfile`)  
+   - Non-root, distroless base image for hardening
+7. **Push to ECR** (`${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}`)
+8. **Resolve image digest** (immutable identifier, e.g. `sha256:…`)
+9. **Generate SBOM** with Syft  
+   - Example: `syft <IMAGE_URI>@<DIGEST> -o cyclonedx-json > sbom.json`
+10. **Sign image & attach SBOM** with Cosign  
+    - `cosign sign <IMAGE_URI>@<DIGEST>`  
+    - `cosign attach sbom --sbom sbom.json <IMAGE_URI>@<DIGEST>`
+11. **Upload artifacts** → SBOM file, build logs
+
+### Successful Build Indicators
+
+- GitHub Actions logs show:  
+  - `Successfully pushed image ...`  
+  - `Digest: sha256:...`  
+  - `cosign: Successfully signed`  
+- Terraform `ecr_repo_url` matches the repo in ECR where the image appears  
+- SBOM artifact available in the workflow run page
