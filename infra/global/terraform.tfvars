@@ -1,0 +1,6 @@
+region        = "eu-central-1"
+environment   = "dev"
+github_owner  = "melike-kaya"
+github_repo   = "CressoftTask"
+github_branch = "main"
+tf_state_bucket_name = "mk-dockyard-tfstate-12345"
