@@ -39,14 +39,30 @@ jobs:
           echo "IMAGE_TAG=$ECR_REPO:build-${GITHUB_RUN_ID}" >> $GITHUB_OUTPUT
         id: b
 
-      - name: Push by tag (to get digest), then by digest (immutable)
+      - name: Push by tag, then capture digest from ECR and push by digest
+        shell: bash
         run: |
-          docker tag  $ECR_REPO:build-${GITHUB_RUN_ID}  $ECR_REGISTRY/$ECR_REPO:build-${GITHUB_RUN_ID}
-          docker push $ECR_REGISTRY/$ECR_REPO:build-${GITHUB_RUN_ID}
-          DIGEST=$(aws ecr describe-images --repository-name "$ECR_REPO" --image-ids imageTag=build-${GITHUB_RUN_ID} --query 'imageDetails[0].imageDigest' -o text)
+          set -euo pipefail
+          TAG="build-${GITHUB_RUN_ID}"
+
+          # tag & push (tag)
+          docker tag  "$ECR_REPO:$TAG"  "$ECR_REGISTRY/$ECR_REPO:$TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPO:$TAG"
+
+          # get remote digest from ECR (⚠️ region gerekli)
+          DIGEST=$(aws ecr describe-images \
+            --region "${{ vars.AWS_REGION }}" \
+            --repository-name "$ECR_REPO" \
+            --image-ids imageTag="$TAG" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+
+          echo "Resolved digest: $DIGEST"
           echo "$DIGEST" > IMAGE_DIGEST.txt
-          docker tag  $ECR_REGISTRY/$ECR_REPO:build-${GITHUB_RUN_ID}  $ECR_REGISTRY/$ECR_REPO@${DIGEST}
-          docker push $ECR_REGISTRY/$ECR_REPO@${DIGEST}
+
+          # push by immutable digest reference (optional but nice)
+          docker tag  "$ECR_REGISTRY/$ECR_REPO:$TAG"  "$ECR_REGISTRY/$ECR_REPO@$DIGEST"
+          docker push "$ECR_REGISTRY/$ECR_REPO@$DIGEST"
 
       - name: Generate SBOM (Syft)
         uses: anchore/sbom-action@v0
