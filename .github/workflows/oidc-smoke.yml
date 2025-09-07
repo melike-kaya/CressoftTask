@@ -1,0 +1,21 @@
+name: oidc-smoke
+on:
+  workflow_dispatch: {}   # Elle tetiklemek için
+
+permissions:
+  id-token: write         # OIDC token almak için şart
+  contents: read
+
+jobs:
+  test-oidc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS creds (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Who am I?
+        run: aws sts get-caller-identity
+
