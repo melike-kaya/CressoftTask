@@ -39,48 +39,42 @@ jobs:
           echo "IMAGE_TAG=$ECR_REPO:build-${GITHUB_RUN_ID}" >> $GITHUB_OUTPUT
         id: b
 
-      - name: Push by tag, then capture digest from ECR and push by digest
+      - name: Push by tag, then capture digest from ECR
         shell: bash
         run: |
           set -euo pipefail
           TAG="build-${GITHUB_RUN_ID}"
-
+      
           # tag & push (tag)
           docker tag  "$ECR_REPO:$TAG"  "$ECR_REGISTRY/$ECR_REPO:$TAG"
           docker push "$ECR_REGISTRY/$ECR_REPO:$TAG"
-
-          # get remote digest from ECR (⚠️ region gerekli)
+      
+          # ECR'den remote digest'i al
           DIGEST=$(aws ecr describe-images \
             --region "${{ vars.AWS_REGION }}" \
             --repository-name "$ECR_REPO" \
             --image-ids imageTag="$TAG" \
             --query 'imageDetails[0].imageDigest' \
             --output text)
-
+      
           echo "Resolved digest: $DIGEST"
           echo "$DIGEST" > IMAGE_DIGEST.txt
 
-          # push by immutable digest reference (optional but nice)
-          docker tag  "$ECR_REGISTRY/$ECR_REPO:$TAG"  "$ECR_REGISTRY/$ECR_REPO@$DIGEST"
-          docker push "$ECR_REGISTRY/$ECR_REPO@$DIGEST"
-
-      - name: Generate SBOM (Syft)
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}@${{ steps.b.outputs.IMAGE_DIGEST || '' }}
-          artifact-name: sbom.spdx.json
-          format: spdx-json
-        continue-on-error: true
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
-
-      - name: Sign (keyless with OIDC)
+      
+      - name: Sign (keyless)
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
-          cosign sign --yes ${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)
-
+          cosign sign --yes "${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)"
+      
+      - name: Generate SBOM (Syft)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft "${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)" -o spdx-json > sbom.spdx.json
+      
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -88,3 +82,14 @@ jobs:
           path: |
             IMAGE_DIGEST.txt
             sbom.spdx.json
+
+      - name: Verify signature (dry-run)
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign verify \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/build.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)"
+
+
