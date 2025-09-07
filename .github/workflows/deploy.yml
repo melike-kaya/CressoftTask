@@ -60,6 +60,12 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
+      - name: Login to ECR (explicit)
+        run: |
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+          | docker login --username AWS --password-stdin "${{ env.ECR_REGISTRY }}"
+
+
       - name: Verify signature
         env:
           COSIGN_EXPERIMENTAL: "true"
