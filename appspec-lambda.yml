@@ -1,1 +1,13 @@
 # AppSpec for Lambda
+version: 0.0
+Resources:
+  - myLambda:
+      Type: AWS::Lambda::Function
+      Properties:
+        Name: "{{ function_name }}"
+        Alias: "{{ alias_name }}"
+        CurrentVersion: "{{ current_version }}"
+        TargetVersion: "{{ target_version }}"
+Hooks:
+  - BeforeAllowTraffic: "LambdaPreTrafficHook"
+  - AfterAllowTraffic:  "LambdaPostTrafficHook"
