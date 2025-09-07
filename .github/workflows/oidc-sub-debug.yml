@@ -1,0 +1,30 @@
+# .github/workflows/oidc-sub-debug.yml
+name: oidc-sub-debug
+on: workflow_dispatch
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  show-claims:
+    runs-on: ubuntu-latest
+    environment: dev        # prod'u test edeceksen burayı prod yap
+    steps:
+      - name: Fetch OIDC token
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GitHub'un OIDC endpoint'inden token al (audience=sts.amazonaws.com)
+          RESP=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                 "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")
+          TOKEN=$(echo "$RESP" | jq -r .value)
+          echo "RAW_JWT_LENGTH=${#TOKEN}"
+
+          # JWT payload'ı decode et ve yazdır
+          PAYLOAD=$(echo "$TOKEN" | cut -d '.' -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq .)
+          echo "==== OIDC PAYLOAD ===="
+          echo "$PAYLOAD"
+
+          # Kolay okuma için sub ve aud'u ayrı yaz
+          echo "SUB: $(echo "$PAYLOAD" | jq -r .sub)"
+          echo "AUD: $(echo "$PAYLOAD" | jq -r .aud)"
