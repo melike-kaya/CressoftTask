@@ -1,1 +1,74 @@
 # Build workflow placeholder
+name: build
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write     # OIDC
+  contents: read
+  packages: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+  ECR_REPO: ${{ vars.ECR_REPO }}
+
+jobs:
+  build-sign-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS creds (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        run: |
+          docker build -t $ECR_REPO:build-${GITHUB_RUN_ID} .
+          echo "IMAGE_TAG=$ECR_REPO:build-${GITHUB_RUN_ID}" >> $GITHUB_OUTPUT
+        id: b
+
+      - name: Push by tag (to get digest), then by digest (immutable)
+        run: |
+          docker tag  $ECR_REPO:build-${GITHUB_RUN_ID}  $ECR_REGISTRY/$ECR_REPO:build-${GITHUB_RUN_ID}
+          docker push $ECR_REGISTRY/$ECR_REPO:build-${GITHUB_RUN_ID}
+          DIGEST=$(aws ecr describe-images --repository-name "$ECR_REPO" --image-ids imageTag=build-${GITHUB_RUN_ID} --query 'imageDetails[0].imageDigest' -o text)
+          echo "$DIGEST" > IMAGE_DIGEST.txt
+          docker tag  $ECR_REGISTRY/$ECR_REPO:build-${GITHUB_RUN_ID}  $ECR_REGISTRY/$ECR_REPO@${DIGEST}
+          docker push $ECR_REGISTRY/$ECR_REPO@${DIGEST}
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}@${{ steps.b.outputs.IMAGE_DIGEST || '' }}
+          artifact-name: sbom.spdx.json
+          format: spdx-json
+        continue-on-error: true
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign (keyless with OIDC)
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign sign --yes ${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            IMAGE_DIGEST.txt
+            sbom.spdx.json
