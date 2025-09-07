@@ -8,27 +8,21 @@ permissions:
 jobs:
   show-claims:
     runs-on: ubuntu-latest
-    environment: dev   # prod'u test edeceksen prod yap
+    environment: dev   # prod'u test etmek istersen prod yap
     steps:
       - name: Fetch OIDC token and print claims
         shell: bash
         run: |
           set -euo pipefail
-
-          # 1) OIDC token al (audience=sts.amazonaws.com)
-          RESP=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          # 1) GitHub OIDC endpoint'inden token al (audience = sts.amazonaws.com)
+          resp=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
                        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")
-          TOKEN=$(python3 - <<'PY'
-import sys, json
-print(json.load(sys.stdin)["value"])
-PY
-<<< "$RESP")
+          token=$(echo "$resp" | jq -r '.value')
+          echo "RAW_JWT_LENGTH=${#token}"
 
-          echo "RAW_JWT_LENGTH=${#TOKEN}"
-
-          # 2) JWT payload'ı base64url decode et ve JSON yazdır
-          python3 - <<'PY'
-import os, base64, json, sys
+          # 2) JWT payload'ı decode edip sub ve aud'u yazdır
+          TOKEN="$token" python3 - <<'PY'
+import os, base64, json
 tok = os.environ["TOKEN"]
 payload_b64 = tok.split('.')[1]
 payload_b64 += '=' * (-len(payload_b64) % 4)  # base64url padding
@@ -39,6 +33,3 @@ print("AUD:", data.get("aud"))
 print("FULL PAYLOAD:")
 print(json.dumps(data, indent=2))
 PY
-        env:
-          TOKEN: ${{ steps.undefined.outputs.notneeded || '' }}
-          # yukarıdaki env sadece Python bloğuna TOKEN geçirmek için; gerçek token satırda set ediliyor
