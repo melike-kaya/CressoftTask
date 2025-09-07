@@ -87,3 +87,4 @@ For full reproducibility, see [terminal_output.yml](terminal_output.yml)
 It contains complete logs of `terraform init/apply`, GitHub Actions workflows,
 smoke tests, and secret rotation.
 
+** For visual confirmation of the resources and deployments, also see the screenshots in the main directory.
