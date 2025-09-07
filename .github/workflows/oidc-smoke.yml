@@ -3,7 +3,7 @@ on:
   workflow_dispatch: {}   # Elle tetiklemek için
 
 permissions:
-  id-token: write         # OIDC token almak için şart
+  id-token: write         # OIDC token için şart
   contents: read
 
 jobs:
@@ -18,4 +18,3 @@ jobs:
 
       - name: Who am I?
         run: aws sts get-caller-identity
-
