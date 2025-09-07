@@ -9,7 +9,7 @@ on:
         options: [dev, prod]
         required: true
       image_digest:
-        description: "ECR image digest (e.g., sha256:....)"
+        description: "ECR image digest (e.g., sha256:...)"
         required: true
 
 permissions:
@@ -24,8 +24,7 @@ env:
 jobs:
   lambda-canary:
     runs-on: ubuntu-latest
-    # Bu, dev/prod Environment'larınızdaki vars/secrets'i yükler
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment }}   # dev/prod Environment vars/secrets kullanılacak
 
     steps:
       - uses: actions/checkout@v4
@@ -36,11 +35,11 @@ jobs:
           role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # ---- Policy gate: imza doğrulama
+      # --- Policy gate: Cosign verify
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Verify signature (cosign)
+      - name: Verify signature
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
@@ -49,12 +48,13 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${ECR_REGISTRY}/${ECR_REPO}@${{ inputs.image_digest }}"
 
-      # ---- 1) Lambda kodunu aynı DIGEST ile güncelle + versiyon yayınla
+      # --- 1) Lambda kodu: aynı digest ile güncelle + version publish
       - name: Update function code to digest & publish version
         id: upd
+        shell: bash
         run: |
           set -euo pipefail
-          FN_NAME="${{ vars.FUNCTION_NAME }}"     # Environment (dev/prod) var
+          FN_NAME="${{ vars.FUNCTION_NAME }}"     # Environment var (dev/prod)
           DIGEST="${{ inputs.image_digest }}"
 
           aws lambda update-function-code \
@@ -65,46 +65,43 @@ jobs:
           VER=$(aws lambda publish-version --function-name "$FN_NAME" --query Version --output text)
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
-      # ---- 2) CodeDeploy ile Canary 10% -> 100% (alias: live)
-      - name: Create CodeDeploy deployment (canary 10%->100%)
+      # --- 2) CodeDeploy canary (10% -> 100%) alias: live
+      - name: Create CodeDeploy deployment
         id: cd
+        shell: bash
         run: |
           set -euo pipefail
-          APP="${{ vars.CD_APP }}"         # Environment var
-          DG="${{ vars.CD_GROUP }}"        # Environment var
-          FN="${{ vars.FUNCTION_NAME }}"   # Environment var
-          ALIAS="${{ vars.ALIAS_NAME }}"   # genelde 'live'
+          APP="${{ vars.CD_APP }}"          # Environment var
+          DG="${{ vars.CD_GROUP }}"         # Environment var
+          FN="${{ vars.FUNCTION_NAME }}"    # Environment var
+          ALIAS="${{ vars.ALIAS_NAME }}"    # genelde 'live'
           TV="${{ steps.upd.outputs.version }}"
 
-          cat > appspec_rendered.yml <<'EOF'
-version: 0.0
-Resources:
-  - myLambda:
-      Type: AWS::Lambda::Function
-      Properties:
-        Name: "__FN__"
-        Alias: "__ALIAS__"
-        CurrentVersion: "__TV__"
-        TargetVersion:  "__TV__"
-EOF
-
-          # placeholders replace
-          sed -i "s#__FN__#${FN}#g" appspec_rendered.yml
-          sed -i "s#__ALIAS__#${ALIAS}#g" appspec_rendered.yml
-          sed -i "s#__TV__#${TV}#g" appspec_rendered.yml
+          # basit appspec içeriği oluştur
+          printf '%s\n' \
+            'version: 0.0' \
+            'Resources:' \
+            '  - myLambda:' \
+            '      Type: AWS::Lambda::Function' \
+            '      Properties:' \
+            "        Name: \"${FN}\"" \
+            "        Alias: \"${ALIAS}\"" \
+            "        CurrentVersion: \"${TV}\"" \
+            "        TargetVersion:  \"${TV}\"" > appspec_rendered.yml
 
           DEPLOY_ID=$(aws deploy create-deployment \
             --application-name "$APP" \
             --deployment-group-name "$DG" \
-            --revision "appSpecContent={content=$(base64 -w0 appspec_rendered.yml)}" \
+            --revision "appSpecContent={content=$(base64 -w 0 appspec_rendered.yml)}" \
             --region "${AWS_REGION}" \
             --query deploymentId --output text)
 
           echo "id=$DEPLOY_ID" >> "$GITHUB_OUTPUT"
           echo "DeploymentId: $DEPLOY_ID"
 
-      # ---- 3) Canary ilerlemesini bekle
-      - name: Wait for CodeDeploy deployment
+      # --- 3) Canary ilerlemesini bekle
+      - name: Wait for deployment
+        shell: bash
         run: |
           set -euo pipefail
           DEPLOY_ID="${{ steps.cd.outputs.id }}"
@@ -119,9 +116,10 @@ EOF
             esac
           done
 
-      # ---- 4) Smoke test (API Gateway /healthz)
+      # --- 4) Smoke test
       - name: Smoke test /healthz
+        shell: bash
         run: |
           set -euo pipefail
-          API_URL="${{ vars.API_URL }}"   # Environment var (dev/prod'a özel)
+          API_URL="${{ vars.API_URL }}"   # Environment var
           curl -sS "${API_URL}/healthz" -H "x-correlation-id: gha-${GITHUB_RUN_ID}" -f
