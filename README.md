@@ -88,3 +88,30 @@ It contains complete logs of `terraform init/apply`, GitHub Actions workflows,
 smoke tests, and secret rotation.
 
 ** For visual confirmation of the resources and deployments, also see the screenshots in the main directory.
+
+
+### Configure GitHub Actions → AWS OIDC
+
+After running `terraform apply` in `infra/global`, collect the outputs:
+
+```bash
+terraform output
+# Example:
+# deploy_bucket   = "dockyard-dev-deploy"
+# ecr_repo_url    = "580073665957.dkr.ecr.eu-central-1.amazonaws.com/podinfo"
+# oidc_role_arn   = "arn:aws:iam::580073665957:role/dockyard-dev-gha-oidc"
+Add these values to your GitHub repository settings:
+
+Secrets
+
+AWS_GHA_ROLE_ARN = value of oidc_role_arn
+
+Variables
+
+AWS_REGION = your AWS region (e.g. eu-central-1)
+
+ECR_REGISTRY = registry part of ecr_repo_url (e.g. 580073665957.dkr.ecr.eu-central-1.amazonaws.com)
+
+ECR_REPO = repository name (e.g. podinfo)
+
+S3_DEPLOY_BUCKET = value of deploy_bucket
