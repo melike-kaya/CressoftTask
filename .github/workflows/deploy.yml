@@ -1,24 +1,20 @@
-# Deploy workflow placeholder
-
-
+# .github/workflows/deploy.yml
 name: deploy
 on:
   workflow_dispatch:
     inputs:
       environment:
-        type: choice
         description: "Deploy environment"
+        type: choice
         options: [dev, prod]
         required: true
       image_digest:
-        description: "ECR image digest (sha256:...)"
+        description: "ECR image digest (e.g., sha256:....)"
         required: true
-
 
 permissions:
   id-token: write
   contents: read
-  packages: read
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
@@ -28,7 +24,9 @@ env:
 jobs:
   lambda-canary:
     runs-on: ubuntu-latest
+    # Bu, dev/prod Environment'larınızdaki vars/secrets'i yükler
     environment: ${{ inputs.environment }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -38,69 +36,77 @@ jobs:
           role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # (Opsiyonel ama önerilir) İmza doğrulama – policy gate
-      - name: Verify signature
+      # ---- Policy gate: imza doğrulama
+      - name: Install cosign
         uses: sigstore/cosign-installer@v3
-      - name: Cosign verify
+
+      - name: Verify signature (cosign)
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           cosign verify \
             --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/build.yml@refs/heads/main" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}@${{ inputs.image_digest }}"
+            "${ECR_REGISTRY}/${ECR_REPO}@${{ inputs.image_digest }}"
 
-      # 1) Lambda kodunu aynı DIGEST ile güncelle
-      - name: Update function code (image digest)
+      # ---- 1) Lambda kodunu aynı DIGEST ile güncelle + versiyon yayınla
+      - name: Update function code to digest & publish version
         id: upd
         run: |
-          FN_NAME=$(aws ssm get-parameter --name "/${{ inputs.environment }}/lambda/function_name" --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
-          # Eğer SSM kullanmıyorsan, Terraform outputs'u README'ye yaz; burada doğrudan isim kullan:
-          FN_NAME="${FN_NAME:-${{ inputs.environment == 'dev' && 'dockyard-dev-podinfo' || 'dockyard-prod-podinfo' }}}"
+          set -euo pipefail
+          FN_NAME="${{ vars.FUNCTION_NAME }}"     # Environment (dev/prod) var
+          DIGEST="${{ inputs.image_digest }}"
 
           aws lambda update-function-code \
             --function-name "$FN_NAME" \
-            --image-uri "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}@${{ inputs.image_digest }}" \
-            --region "${{ env.AWS_REGION }}" >/dev/null
+            --image-uri "${ECR_REGISTRY}/${ECR_REPO}@${DIGEST}" \
+            --region "${AWS_REGION}" >/dev/null
 
           VER=$(aws lambda publish-version --function-name "$FN_NAME" --query Version --output text)
-          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
 
-      # 2) CodeDeploy ile canary 10%→100% (alias: live)
-      - name: Create CodeDeploy deployment
+      # ---- 2) CodeDeploy ile Canary 10% -> 100% (alias: live)
+      - name: Create CodeDeploy deployment (canary 10%->100%)
         id: cd
         run: |
-          APP="${{ inputs.environment == 'dev' && 'dockyard-dev-lambda-app' || 'dockyard-prod-lambda-app' }}"
-          DG="${{ inputs.environment == 'dev' && 'dockyard-dev-lambda-dg'  || 'dockyard-prod-lambda-dg'  }}"
-          FN="${{ inputs.environment == 'dev' && 'dockyard-dev-podinfo'    || 'dockyard-prod-podinfo'    }}"
-          ALIAS="live"
+          set -euo pipefail
+          APP="${{ vars.CD_APP }}"         # Environment var
+          DG="${{ vars.CD_GROUP }}"        # Environment var
+          FN="${{ vars.FUNCTION_NAME }}"   # Environment var
+          ALIAS="${{ vars.ALIAS_NAME }}"   # genelde 'live'
+          TV="${{ steps.upd.outputs.version }}"
 
-          cat > appspec_rendered.yml <<EOF
+          cat > appspec_rendered.yml <<'EOF'
 version: 0.0
 Resources:
   - myLambda:
       Type: AWS::Lambda::Function
       Properties:
-        Name: "${FN}"
-        Alias: "${ALIAS}"
-        CurrentVersion: "${{ steps.upd.outputs.version }}"    # önceki alias versiyonu olarak da verilebilir
-        TargetVersion:  "${{ steps.upd.outputs.version }}"
+        Name: "__FN__"
+        Alias: "__ALIAS__"
+        CurrentVersion: "__TV__"
+        TargetVersion:  "__TV__"
 EOF
+
+          # placeholders replace
+          sed -i "s#__FN__#${FN}#g" appspec_rendered.yml
+          sed -i "s#__ALIAS__#${ALIAS}#g" appspec_rendered.yml
+          sed -i "s#__TV__#${TV}#g" appspec_rendered.yml
 
           DEPLOY_ID=$(aws deploy create-deployment \
             --application-name "$APP" \
             --deployment-group-name "$DG" \
             --revision "appSpecContent={content=$(base64 -w0 appspec_rendered.yml)}" \
-            --region "${{ env.AWS_REGION }}" \
+            --region "${AWS_REGION}" \
             --query deploymentId --output text)
 
-          echo "id=$DEPLOY_ID" >> $GITHUB_OUTPUT
+          echo "id=$DEPLOY_ID" >> "$GITHUB_OUTPUT"
           echo "DeploymentId: $DEPLOY_ID"
 
-      # 3) Canary ilerlerken bekle ve sonucu doğrula
-      - name: Wait for deployment
+      # ---- 3) Canary ilerlemesini bekle
+      - name: Wait for CodeDeploy deployment
         run: |
-          set -e
+          set -euo pipefail
           DEPLOY_ID="${{ steps.cd.outputs.id }}"
           while true; do
             ST=$(aws deploy get-deployment --deployment-id "$DEPLOY_ID" --query 'deploymentInfo.status' --output text)
@@ -113,9 +119,9 @@ EOF
             esac
           done
 
-      # 4) Smoke test (API Gateway healthz)
-      - name: Smoke test
+      # ---- 4) Smoke test (API Gateway /healthz)
+      - name: Smoke test /healthz
         run: |
-          API_URL="${{ secrets.${{ inputs.environment == 'dev' && 'DEV_API_URL' || 'PROD_API_URL' }} }}"
-          # Terraform output apigw_url'i secrets/vars içinde tutman pratik olur
+          set -euo pipefail
+          API_URL="${{ vars.API_URL }}"   # Environment var (dev/prod'a özel)
           curl -sS "${API_URL}/healthz" -H "x-correlation-id: gha-${GITHUB_RUN_ID}" -f
