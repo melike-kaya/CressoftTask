@@ -1,19 +1,24 @@
 # Deploy workflow placeholder
+
+
 name: deploy
 on:
   workflow_dispatch:
     inputs:
       environment:
         type: choice
+        description: "Deploy environment"
         options: [dev, prod]
         required: true
       image_digest:
         description: "ECR image digest (sha256:...)"
         required: true
 
+
 permissions:
   id-token: write
   contents: read
+  packages: read
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
