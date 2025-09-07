@@ -64,6 +64,22 @@ jobs:
         run: |
           aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
           | docker login --username AWS --password-stdin "${{ env.ECR_REGISTRY }}"
+      
+      - name: Debug: triangulate signature ref and check in ECR
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          # What signature tag should exist for this digest?
+          SIGREF=$(cosign triangulate "${ECR_REGISTRY}/${ECR_REPO}@${{ inputs.image_digest }}")
+          echo "Cosign expects signature tag: $SIGREF"
+      
+          # Does that .sig tag exist in ECR?
+          SIGTAG="${SIGREF##*:}"  # extract tag part after the colon
+          aws ecr describe-images \
+            --region "${AWS_REGION}" \
+            --repository-name "${ECR_REPO}" \
+            --image-ids imageTag="$SIGTAG" \
+            --query 'imageDetails[0].imageDigest' --output text
 
 
       - name: Verify signature
