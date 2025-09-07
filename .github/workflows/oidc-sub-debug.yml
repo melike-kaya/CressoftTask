@@ -8,20 +8,21 @@ permissions:
 jobs:
   show-claims:
     runs-on: ubuntu-latest
-    environment: dev   # prod'u test etmek istersen prod yap
+    environment: dev   # prod'u test edeceksen prod yap
     steps:
       - name: Fetch OIDC token and print claims
         shell: bash
         run: |
           set -euo pipefail
+
           # 1) GitHub OIDC endpoint'inden token al (audience = sts.amazonaws.com)
           resp=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
                        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")
           token=$(echo "$resp" | jq -r '.value')
           echo "RAW_JWT_LENGTH=${#token}"
 
-          # 2) JWT payload'ı decode edip sub ve aud'u yazdır
-          TOKEN="$token" python3 - <<'PY'
+          # 2) Python betiğini dosyaya yaz
+          cat > decode.py <<'PY'
 import os, base64, json
 tok = os.environ["TOKEN"]
 payload_b64 = tok.split('.')[1]
@@ -33,3 +34,6 @@ print("AUD:", data.get("aud"))
 print("FULL PAYLOAD:")
 print(json.dumps(data, indent=2))
 PY
+
+          # 3) Çalıştır ve çıktıyı göster
+          TOKEN="$token" python3 decode.py
