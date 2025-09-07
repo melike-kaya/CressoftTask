@@ -8,23 +8,37 @@ permissions:
 jobs:
   show-claims:
     runs-on: ubuntu-latest
-    environment: dev        # prod'u test edeceksen burayı prod yap
+    environment: dev   # prod'u test edeceksen prod yap
     steps:
-      - name: Fetch OIDC token
+      - name: Fetch OIDC token and print claims
         shell: bash
         run: |
           set -euo pipefail
-          # GitHub'un OIDC endpoint'inden token al (audience=sts.amazonaws.com)
+
+          # 1) OIDC token al (audience=sts.amazonaws.com)
           RESP=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-                 "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")
-          TOKEN=$(echo "$RESP" | jq -r .value)
+                       "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")
+          TOKEN=$(python3 - <<'PY'
+import sys, json
+print(json.load(sys.stdin)["value"])
+PY
+<<< "$RESP")
+
           echo "RAW_JWT_LENGTH=${#TOKEN}"
 
-          # JWT payload'ı decode et ve yazdır
-          PAYLOAD=$(echo "$TOKEN" | cut -d '.' -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq .)
-          echo "==== OIDC PAYLOAD ===="
-          echo "$PAYLOAD"
-
-          # Kolay okuma için sub ve aud'u ayrı yaz
-          echo "SUB: $(echo "$PAYLOAD" | jq -r .sub)"
-          echo "AUD: $(echo "$PAYLOAD" | jq -r .aud)"
+          # 2) JWT payload'ı base64url decode et ve JSON yazdır
+          python3 - <<'PY'
+import os, base64, json, sys
+tok = os.environ["TOKEN"]
+payload_b64 = tok.split('.')[1]
+payload_b64 += '=' * (-len(payload_b64) % 4)  # base64url padding
+payload = base64.urlsafe_b64decode(payload_b64).decode()
+data = json.loads(payload)
+print("SUB:", data.get("sub"))
+print("AUD:", data.get("aud"))
+print("FULL PAYLOAD:")
+print(json.dumps(data, indent=2))
+PY
+        env:
+          TOKEN: ${{ steps.undefined.outputs.notneeded || '' }}
+          # yukarıdaki env sadece Python bloğuna TOKEN geçirmek için; gerçek token satırda set ediliyor
