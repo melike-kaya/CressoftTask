@@ -41,21 +41,71 @@ jobs:
           TAG="build-${GITHUB_RUN_ID}"
           docker build -t "${ECR_REPO}:${TAG}" .
 
-
-      - name: Push by tag, then capture digest from ECR (with retry)
+      - name: Push by tag, then capture digest from ECR
         shell: bash
         run: |
           set -euo pipefail
           TAG="build-${GITHUB_RUN_ID}"
-          docker tag "${ECR_REPO}:${TAG}" "${ECR_REGISTRY}/${ECR_REPO}:${TAG}"
-          DIGEST="$(docker push "${ECR_REGISTRY}/${ECR_REPO}:${TAG}" | awk '/digest:/ {print $2}')"
-          if [[ -z "${DIGEST:-}" || "${DIGEST}" == "(nil)" ]]; then
-            echo "ERROR: Could not parse image digest from push output"; exit 1
-          fi
-          echo "Resolved digest from push: ${DIGEST}"
+          docker tag  "${ECR_REPO}:${TAG}"  "${ECR_REGISTRY}/${ECR_REPO}:${TAG}"
+          docker push "${ECR_REGISTRY}/${ECR_REPO}:${TAG}"
+
+          DIGEST=$(aws ecr describe-images \
+            --region "${AWS_REGION}" \
+            --repository-name "${ECR_REPO}" \
+            --image-ids imageTag="${TAG}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+          echo "Resolved digest: ${DIGEST}"
           echo "${DIGEST}" > IMAGE_DIGEST.txt
 
-      # refresh login so cosign verify can read referrers from ECR
+      # --- ECR login #2: cosign .sig push için
+      - name: Login to ECR (for cosign sign)
+        run: |
+          aws ecr get-login-password --region "${AWS_REGION}" \
+          | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image by digest (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          IMG="${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)"
+          echo "Signing ${IMG}"
+          cosign sign --yes "${IMG}"
+
+      # İmza gerçekten ECR'de mi? Kanıtla
+      - name: Triangulate signature and assert exists
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          IMG="${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)"
+          SIGREF=$(cosign triangulate "${IMG}")
+          echo "Signature tag: ${SIGREF}"
+          SIGTAG="${SIGREF##*:}"
+          aws ecr describe-images \
+            --region "${AWS_REGION}" \
+            --repository-name "${ECR_REPO}" \
+            --image-ids imageTag="${SIGTAG}" \
+            --query 'imageDetails[0].imageDigest' --output text
+
+      - name: Generate SBOM (Syft)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft "${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)" -o spdx-json > sbom.spdx.json
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            IMAGE_DIGEST.txt
+            sbom.spdx.json
+
+      # --- ECR login #3: cosign verify de registry'ye erişsin
       - name: Login to ECR (for cosign verify)
         run: |
           aws ecr get-login-password --region "${AWS_REGION}" \
@@ -66,10 +116,7 @@ jobs:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           set -euo pipefail
-          IMG="${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)"
-          # Use the exact workflow ref that Fulcio places into the cert:
-          # e.g. owner/repo/.github/workflows/build.yml@refs/heads/main
           cosign verify \
-            --certificate-identity "https://github.com/${{ github.workflow_ref }}" \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/build.yml@refs/heads/main" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${IMG}"
+            "${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)"
