@@ -81,4 +81,9 @@ After migration, all future Terraform runs will use the remote S3 backend with D
 * `tf_state_bucket` — S3 bucket name for Terraform state
 * `tf_lock_table` — DynamoDB table name for state locking
 
+## Logs
+
+For full reproducibility, see [terminal_output.yml](terminal_output.yml)  
+It contains complete logs of `terraform init/apply`, GitHub Actions workflows,
+smoke tests, and secret rotation.
 
