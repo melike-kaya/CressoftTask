@@ -62,6 +62,11 @@ jobs:
           echo "Resolved digest: $DIGEST"
           echo "$DIGEST" > IMAGE_DIGEST.txt
 
+      - name: Login to ECR (for cosign sign)
+        run: |
+          aws ecr get-login-password --region "${{ vars.AWS_REGION }}" \
+          | docker login --username AWS --password-stdin "${{ vars.ECR_REGISTRY }}"
+          
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
       
