@@ -115,3 +115,5 @@ ECR_REGISTRY = registry part of ecr_repo_url (e.g. 580073665957.dkr.ecr.eu-centr
 ECR_REPO = repository name (e.g. podinfo)
 
 S3_DEPLOY_BUCKET = value of deploy_bucket
+
+** See the screenshots in the main directory of this repo for an example of how the GitHub secrets and variables are configured.
