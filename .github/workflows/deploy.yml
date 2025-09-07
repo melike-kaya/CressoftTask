@@ -29,6 +29,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Debug OIDC token sub
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 1) Ask GitHub for an OIDC token (same audience the AWS action uses)
+          RESP=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+          TOKEN=$(echo "$RESP" | jq -r '.value')
+      
+          # 2) Extract JWT payload (part 2), convert URL-safe base64 to standard, pad, decode
+          P64=$(echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+')
+          while [ $(( ${#P64} % 4 )) -ne 0 ]; do P64="${P64}="; done
+          PAYLOAD=$(echo "$P64" | base64 -d 2>/dev/null)
+      
+          # 3) Print sub
+          SUB=$(echo "$PAYLOAD" | jq -r '.sub')
+          echo "OIDC sub: $SUB"
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+
       - name: Configure AWS creds (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
