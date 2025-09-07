@@ -41,39 +41,35 @@ jobs:
           TAG="build-${GITHUB_RUN_ID}"
           docker build -t "${ECR_REPO}:${TAG}" .
 
+
       - name: Push by tag, then capture digest from ECR (with retry)
         shell: bash
         run: |
           set -euo pipefail
           TAG="build-${GITHUB_RUN_ID}"
-          docker tag  "${ECR_REPO}:${TAG}"  "${ECR_REGISTRY}/${ECR_REPO}:${TAG}"
-          # capture digest from push output to avoid ECR lag
+          docker tag "${ECR_REPO}:${TAG}" "${ECR_REGISTRY}/${ECR_REPO}:${TAG}"
           DIGEST="$(docker push "${ECR_REGISTRY}/${ECR_REPO}:${TAG}" | awk '/digest:/ {print $2}')"
+          if [[ -z "${DIGEST:-}" || "${DIGEST}" == "(nil)" ]]; then
+            echo "ERROR: Could not parse image digest from push output"; exit 1
+          fi
           echo "Resolved digest from push: ${DIGEST}"
           echo "${DIGEST}" > IMAGE_DIGEST.txt
 
-      # --- remove the old triangulate + aws ecr describe-images check ---
-
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Sign image by digest (keyless)
-        env:
-          COSIGN_EXPERIMENTAL: "true"
+      # refresh login so cosign verify can read referrers from ECR
+      - name: Login to ECR (for cosign verify)
         run: |
-          set -euo pipefail
-          IMG="${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)"
-          echo "Signing ${IMG}"
-          cosign sign --yes "${IMG}"
+          aws ecr get-login-password --region "${AWS_REGION}" \
+          | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
-      # Assert by verifying (this proves the signature exists & is valid)
       - name: Verify signature (keyless)
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           set -euo pipefail
           IMG="${ECR_REGISTRY}/${ECR_REPO}@$(cat IMAGE_DIGEST.txt)"
+          # Use the exact workflow ref that Fulcio places into the cert:
+          # e.g. owner/repo/.github/workflows/build.yml@refs/heads/main
           cosign verify \
-            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/build.yml@refs/heads/main" \
+            --certificate-identity "https://github.com/${{ github.workflow_ref }}" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${IMG}"
